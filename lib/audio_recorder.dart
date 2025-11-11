@@ -1,24 +1,31 @@
-import 'dart:async';
-import 'dart:io';
+// lib/audio_recorder.dart
+import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
+import 'dart:io';
 
 class AudioRecorder {
-  bool _isRecording = false;
-  late File _outputFile;
+  final Record _record = Record();
+  late String _outputPath;
 
-  Future<void> start({String? path}) async {
+  Future<void> start(String fileName) async {
     final dir = await getApplicationDocumentsDirectory();
-    _outputFile = File(path ?? '${dir.path}/recorded.wav');
-    // Simulate recording logic here
-    _isRecording = true;
-    print('Recording started...');
+    final recordingsDir = Directory('${dir.path}/recordings');
+    if (!await recordingsDir.exists()) {
+      await recordingsDir.create(recursive: true);
+    }
+
+    _outputPath = '${recordingsDir.path}/$fileName';
+    await _record.start(path: _outputPath);
+    print("🎙️ Recording started: $_outputPath");
   }
 
   Future<String> stop() async {
-    _isRecording = false;
-    print('Recording stopped.');
-    return _outputFile.path;
+    await _record.stop();
+    print("🛑 Recording stopped.");
+    return _outputPath;
   }
 
-  bool get isRecording => _isRecording;
+  Future<bool> isRecording() async {
+    return await _record.isRecording();
+  }
 }

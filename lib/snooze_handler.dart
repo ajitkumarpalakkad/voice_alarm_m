@@ -23,5 +23,6 @@ class SnoozeHandler {
     final snoozeKey =
         '${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')}';
     alarmManager.addAlarm(snoozeKey, onTrigger);
+    print("🕒 Snooze scheduled for: $snoozeKey");
   }
 }

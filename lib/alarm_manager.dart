@@ -14,7 +14,9 @@ class AlarmManager {
       final now = TimeOfDay.now();
       final key =
           '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+      print("⏰ Checking time: $key");
       if (alarms.containsKey(key)) {
+        print("🔔 Triggering alarm for $key");
         alarms[key]!();
       }
     });
