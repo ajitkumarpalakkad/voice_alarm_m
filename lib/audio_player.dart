@@ -1,20 +1,31 @@
 // lib/audio_player.dart
-import 'package:just_audio/just_audio.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 
 class AudioPlayerService {
   final AudioPlayer _player = AudioPlayer();
 
-  Future<void> play(String filePath) async {
+  Future<void> play(String fileName) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final filePath = '${dir.path}/$fileName';
+    final file = File(filePath);
+
+    if (!file.existsSync()) {
+      print("❌ File not found: $filePath");
+      return;
+    }
+
     try {
-      await _player.setFilePath(filePath);
-      await _player.play();
+      await _player.play(DeviceFileSource(filePath));
       print("🔊 Playing: $filePath");
     } catch (e) {
       print("⚠️ Playback error: $e");
     }
   }
 
-  void stop() {
-    _player.stop();
+  Future<void> stop() async {
+    await _player.stop();
+    print("⏹️ Playback stopped");
   }
 }
