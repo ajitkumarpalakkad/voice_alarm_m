@@ -1,135 +1,155 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'models/alarm_entry.dart';
-import 'widgets/alarm_tile.dart'; // Update if your folder is named 'widgets'
-import 'audio_player.dart';
-import 'audio_recorder.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_sound/flutter_sound.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() {
-  runApp(const VoiceAlarmApp());
+  runApp(VoiceAlarmApp());
 }
 
 class VoiceAlarmApp extends StatelessWidget {
-  const VoiceAlarmApp({super.key});
-
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Voice Alarm',
-      theme: ThemeData(primarySwatch: Colors.indigo),
-      home: const AlarmHomePage(),
-    );
+    return MaterialApp(title: 'Voice Alarm', home: AlarmScreen());
   }
 }
 
-class AlarmHomePage extends StatefulWidget {
-  const AlarmHomePage({super.key});
-
+class AlarmScreen extends StatefulWidget {
   @override
-  State<AlarmHomePage> createState() => _AlarmHomePageState();
+  _AlarmScreenState createState() => _AlarmScreenState();
 }
 
-class _AlarmHomePageState extends State<AlarmHomePage> {
-  final List<AlarmEntry> alarms = [
-    AlarmEntry(
-      label: "Alarm 1",
-      time: TimeOfDay(hour: 7, minute: 0),
-      fileName: "alarm_0700.wav",
-    ),
-    AlarmEntry(
-      label: "Alarm 2",
-      time: TimeOfDay(hour: 8, minute: 30),
-      fileName: "alarm_0830.wav",
-    ),
-    AlarmEntry(
-      label: "Alarm 3",
-      time: TimeOfDay(hour: 9, minute: 45),
-      fileName: "alarm_0945.wav",
-    ),
-    AlarmEntry(
-      label: "Alarm 4",
-      time: TimeOfDay(hour: 11, minute: 0),
-      fileName: "alarm_1100.wav",
-    ),
-    AlarmEntry(
-      label: "Alarm 5",
-      time: TimeOfDay(hour: 13, minute: 15),
-      fileName: "alarm_1315.wav",
-    ),
-  ];
+class _AlarmScreenState extends State<AlarmScreen> {
+  final FlutterSoundRecorder _recorder = FlutterSoundRecorder();
+  bool _isRecording = false;
+  int _alarmId = 1;
 
-  final player = AudioPlayerService();
-  final recorder = AudioRecorderService();
+  late String _filePath = '';
 
-  void setTime(int index) async {
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: alarms[index].time,
+  @override
+  void initState() {
+    super.initState();
+    _initRecorder();
+  }
+
+  Future<void> _initRecorder() async {
+    final micStatus = await Permission.microphone.request();
+
+    print('Microphone permission: $micStatus');
+
+    if (!micStatus.isGranted) {
+      print('Microphone permission not granted. Recording will fail.');
+      if (context.mounted) {
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: Text('Microphone Permission Required'),
+            content: Text(
+              'Please grant microphone permission to record audio.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  openAppSettings();
+                  Navigator.of(context).pop();
+                },
+                child: Text('Open Settings'),
+              ),
+            ],
+          ),
+        );
+      }
+      return;
+    }
+
+    await _recorder.openRecorder();
+
+    final dir = await getApplicationDocumentsDirectory();
+    _filePath = '${dir.path}/alarm_$_alarmId.aac';
+    print('Initialized file path: $_filePath');
+  }
+
+  Future<void> _startRecording() async {
+    if (_filePath.isEmpty) {
+      print('Cannot start recording: file path not initialized.');
+      return;
+    }
+
+    await Future.delayed(
+      Duration(milliseconds: 500),
+    ); // Ensure recorder is ready
+
+    await _recorder.startRecorder(
+      toFile: _filePath,
+      codec: Codec.aacADTS, // Use AAC format for better compatibility
     );
-    if (picked != null) {
-      setState(() {
-        alarms[index].time = picked;
-        alarms[index].fileName =
-            "alarm_${picked.hour.toString().padLeft(2, '0')}${picked.minute.toString().padLeft(2, '0')}.wav";
-      });
-      print("⏰ ${alarms[index].label} time set to ${picked.format(context)}");
+
+    setState(() => _isRecording = true);
+    print('Recording started: $_filePath');
+  }
+
+  Future<void> _stopRecording() async {
+    await _recorder.stopRecorder();
+    setState(() => _isRecording = false);
+    print('Recording stopped: $_filePath');
+
+    final file = File(_filePath);
+    print('File exists after recording: ${file.existsSync()}');
+    if (file.existsSync()) {
+      print('File size: ${file.lengthSync()} bytes');
     }
   }
 
-  void recordVoice(int index) async {
-    final fileName = alarms[index].fileName;
-    await recorder.start(fileName);
-  }
+  Future<void> _playRecording() async {
+    final file = File(_filePath);
+    print('Attempting to play: $_filePath');
+    print('File exists before playback: ${file.existsSync()}');
+    if (file.existsSync()) {
+      print('File size: ${file.lengthSync()} bytes');
+    }
 
-  void stopRecording() async {
-    await recorder.stop();
-  }
+    if (!file.existsSync()) {
+      print('Playback failed: file does not exist');
+      return;
+    }
 
-  void playVoice(int index) async {
-    final fileName = alarms[index].fileName;
-    await player.play(fileName);
-  }
-
-  void snoozeAlarm(int index) {
-    print("⏸️ Snoozing ${alarms[index].label} for 1 minute");
-    // TODO: Add snooze logic
-  }
-
-  void resetAlarm(int index) {
-    setState(() {
-      alarms[index].time = TimeOfDay(hour: 0, minute: 0);
-      alarms[index].fileName = "";
-    });
-    print("❌ Reset ${alarms[index].label}");
+    final player = AudioPlayer();
+    try {
+      await player.setReleaseMode(ReleaseMode.stop);
+      await player.play(DeviceFileSource(_filePath));
+      print('Playback started');
+    } catch (e) {
+      print('Playback error: $e');
+    }
   }
 
   @override
   void dispose() {
-    recorder.dispose();
+    _recorder.closeRecorder();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Voice Alarm")),
-      body: ListView.builder(
-        itemCount: alarms.length,
-        itemBuilder: (context, index) {
-          final alarm = alarms[index];
-          return AlarmTile(
-            alarm: alarm,
-            onSetTime: () => setTime(index),
-            onRecord: () => recordVoice(index),
-            onPlay: () => playVoice(index),
-            onSnooze: () => snoozeAlarm(index),
-            onReset: () => resetAlarm(index),
-          );
-        },
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: stopRecording,
-        child: const Icon(Icons.stop),
-        tooltip: 'Stop Recording',
+      appBar: AppBar(title: Text('Voice Alarm $_alarmId')),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            ElevatedButton(
+              onPressed: _isRecording ? _stopRecording : _startRecording,
+              child: Text(_isRecording ? 'Stop Recording' : 'Start Recording'),
+            ),
+            SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _playRecording,
+              child: Text('Play Recording'),
+            ),
+          ],
+        ),
       ),
     );
   }
