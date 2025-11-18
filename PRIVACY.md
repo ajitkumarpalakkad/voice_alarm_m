@@ -1,4 +1,5 @@
 📜 Privacy Policy – Voice Alarm App
+[![Privacy Policy](https://img.shields.io/badge/Privacy-Policy-blue)](PRIVACY.md)
 Effective Date: [18-Nov-2025]
 Developer: Ajitkumar
 
@@ -43,5 +44,5 @@ Developer: Ajitkumar
 
 9. Contact
 For questions or concerns about this privacy policy, please contact:
-Email: [Insert your email]
+Email: [ajitkumar.palakkad@gmail.com]
 Website: [Insert your landing page link]
