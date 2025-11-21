@@ -19,7 +19,7 @@ class VoiceAlarmApp extends StatelessWidget {
 
 class AlarmData {
   String title;
-  TimeOfDay? time;
+  DateTime? dateTime;
   int snoozeMinutes;
   DateTime? snoozedUntil;
   bool isOn;
@@ -27,10 +27,13 @@ class AlarmData {
   bool isRecording;
   bool isPlaying;
   AudioPlayer? player;
+  StreamSubscription<void>? onCompleteSub;
+  bool isRecurring;
+  List<int> repeatDays;
 
   AlarmData({
     required this.title,
-    this.time,
+    this.dateTime,
     this.snoozeMinutes = 5,
     this.snoozedUntil,
     this.isOn = false,
@@ -38,7 +41,10 @@ class AlarmData {
     this.isRecording = false,
     this.isPlaying = false,
     this.player,
-  });
+    this.onCompleteSub,
+    this.isRecurring = false,
+    List<int>? repeatDays,
+  }) : repeatDays = repeatDays ?? [];
 }
 
 class AlarmScreen extends StatefulWidget {
@@ -46,7 +52,10 @@ class AlarmScreen extends StatefulWidget {
   _AlarmScreenState createState() => _AlarmScreenState();
 }
 
-class _AlarmScreenState extends State<AlarmScreen> {
+class _AlarmScreenState extends State<AlarmScreen>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _blinkController;
+  late Animation<Color?> _colorAnimation;
   late FlutterSoundRecorder _recorder;
   List<AlarmData> alarms = [];
   late List<TextEditingController> _titleControllers;
@@ -54,10 +63,9 @@ class _AlarmScreenState extends State<AlarmScreen> {
   Timer? _alarmChecker;
   Timer? _snoozeChecker;
 
-  // Password lock
-  String _password = "ajit123"; // change to your password
-  bool isUnlocked = false;
-  TextEditingController _pwController = TextEditingController();
+  Duration? _countdown;
+  Duration? _totalCountdown; // ✅ new field
+  Timer? _countdownTimer;
 
   @override
   void initState() {
@@ -66,6 +74,16 @@ class _AlarmScreenState extends State<AlarmScreen> {
     _initAlarms();
     _startAlarmMonitor();
     _startSnoozeMonitor();
+
+    _blinkController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    )..repeat(reverse: true);
+
+    _colorAnimation = ColorTween(
+      begin: Colors.red.shade200,
+      end: Colors.red.shade600,
+    ).animate(_blinkController);
   }
 
   Future<void> _initRecorder() async {
@@ -96,16 +114,34 @@ class _AlarmScreenState extends State<AlarmScreen> {
       _titleControllers[currentIndex];
 
   void _startAlarmMonitor() {
-    _alarmChecker = Timer.periodic(Duration(seconds: 1), (_) {
-      for (var alarm in alarms) {
-        if (alarm.isOn && alarm.time != null) {
-          final now = DateTime.now();
-          if (alarm.snoozedUntil != null && now.isBefore(alarm.snoozedUntil!))
-            continue;
-          if (now.hour == alarm.time!.hour &&
-              now.minute == alarm.time!.minute &&
+    _alarmChecker = Timer.periodic(const Duration(seconds: 1), (_) async {
+      final now = DateTime.now();
+      final int todayIndex = now.weekday % 7;
+
+      for (final alarm in alarms) {
+        if (!alarm.isOn || alarm.dateTime == null) continue;
+        if (alarm.snoozedUntil != null && now.isBefore(alarm.snoozedUntil!))
+          continue;
+
+        if (alarm.isRecurring) {
+          if (alarm.repeatDays.isEmpty) continue;
+          if (alarm.repeatDays.contains(todayIndex)) {
+            if (now.hour == alarm.dateTime!.hour &&
+                now.minute == alarm.dateTime!.minute &&
+                now.second == 0) {
+              await _playAlarmRecording(alarm);
+              _setNextAlarmCountdown();
+            }
+          }
+        } else {
+          if (now.year == alarm.dateTime!.year &&
+              now.month == alarm.dateTime!.month &&
+              now.day == alarm.dateTime!.day &&
+              now.hour == alarm.dateTime!.hour &&
+              now.minute == alarm.dateTime!.minute &&
               now.second == 0) {
-            _playAlarmRecording(alarm);
+            await _playAlarmRecording(alarm);
+            _setNextAlarmCountdown();
           }
         }
       }
@@ -113,13 +149,13 @@ class _AlarmScreenState extends State<AlarmScreen> {
   }
 
   void _startSnoozeMonitor() {
-    _snoozeChecker = Timer.periodic(Duration(seconds: 1), (_) {
-      for (var alarm in alarms) {
+    _snoozeChecker = Timer.periodic(const Duration(seconds: 1), (_) async {
+      for (final alarm in alarms) {
         if (alarm.isOn &&
             alarm.snoozedUntil != null &&
             DateTime.now().isAfter(alarm.snoozedUntil!)) {
           alarm.snoozedUntil = null;
-          _playAlarmRecording(alarm);
+          await _playAlarmRecording(alarm);
           setState(() {});
         }
       }
@@ -130,15 +166,19 @@ class _AlarmScreenState extends State<AlarmScreen> {
   void dispose() {
     _alarmChecker?.cancel();
     _snoozeChecker?.cancel();
+    _countdownTimer?.cancel();
     _recorder.closeRecorder();
     for (var alarm in alarms) {
+      alarm.player?.stop();
+      alarm.onCompleteSub?.cancel();
       alarm.player?.dispose();
     }
+    _blinkController.dispose();
     super.dispose();
   }
 
   Future<void> _startRecording() async {
-    await Future.delayed(Duration(milliseconds: 500));
+    await Future.delayed(const Duration(milliseconds: 300));
     await _recorder.startRecorder(
       toFile: currentAlarm.filePath,
       codec: Codec.aacADTS,
@@ -163,16 +203,138 @@ class _AlarmScreenState extends State<AlarmScreen> {
     if (alarm.isPlaying) return;
     final file = File(alarm.filePath);
     if (!file.existsSync()) return;
+
     alarm.isPlaying = true;
+    await alarm.player?.stop();
+    await alarm.onCompleteSub?.cancel();
+
     alarm.player = AudioPlayer();
     await alarm.player!.setReleaseMode(ReleaseMode.stop);
     await alarm.player!.play(DeviceFileSource(alarm.filePath));
-    alarm.player!.onPlayerComplete.listen((event) {
+
+    alarm.onCompleteSub = alarm.player!.onPlayerComplete.listen((_) async {
       alarm.isPlaying = false;
-      if (alarm.isOn && alarm.snoozedUntil == null) {
-        _playAlarmRecording(alarm);
+      if (alarm.isOn &&
+          alarm.snoozedUntil == null &&
+          File(alarm.filePath).existsSync()) {
+        await _playAlarmRecording(alarm);
       }
     });
+  }
+
+  void _alarmOff() {
+    currentAlarm.snoozedUntil = null;
+    currentAlarm.isOn = false;
+    currentAlarm.player?.stop();
+    currentAlarm.onCompleteSub?.cancel();
+    currentAlarm.isPlaying = false;
+    setState(() {});
+  }
+
+  Future<void> _deleteRecordingFile(AlarmData alarm) async {
+    try {
+      final file = File(alarm.filePath);
+      if (file.existsSync()) {
+        await file.delete();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _resetAlarm() async {
+    currentAlarm.isOn = false;
+    currentAlarm.player?.stop();
+    await currentAlarm.onCompleteSub?.cancel();
+    currentAlarm.isPlaying = false;
+
+    currentAlarm.snoozedUntil = null;
+    currentAlarm.dateTime = null;
+
+    currentAlarm.title = "Alarm ${currentIndex + 1}";
+    currentController.text = currentAlarm.title;
+
+    currentAlarm.isRecurring = false;
+    currentAlarm.repeatDays = [];
+
+    currentAlarm.isRecording = false;
+    await _deleteRecordingFile(currentAlarm);
+
+    _countdownTimer?.cancel();
+    _countdown = null;
+
+    setState(() {});
+  }
+
+  Future<void> _pickAlarmDateTime() async {
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+
+    if (pickedDate != null) {
+      final pickedTime = await showTimePicker(
+        context: context,
+        initialTime: TimeOfDay.now(),
+      );
+
+      if (pickedTime != null) {
+        setState(() {
+          currentAlarm.dateTime = DateTime(
+            pickedDate.year,
+            pickedDate.month,
+            pickedDate.day,
+            pickedTime.hour,
+            pickedTime.minute,
+          );
+          currentAlarm.isOn = true;
+        });
+        _startCountdown();
+      }
+    }
+  }
+
+  void _startCountdown() {
+    _countdownTimer?.cancel();
+    DateTime? target = currentAlarm.snoozedUntil ?? currentAlarm.dateTime;
+    if (target == null) return;
+
+    _countdown = target.difference(DateTime.now());
+    _totalCountdown = _countdown; // ✅ store full duration once
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      setState(() {
+        DateTime? activeTarget =
+            currentAlarm.snoozedUntil ?? currentAlarm.dateTime;
+        if (activeTarget != null) {
+          _countdown = activeTarget.difference(DateTime.now());
+          if (_countdown!.isNegative) {
+            _countdownTimer?.cancel();
+            _countdown = null;
+            _totalCountdown = null; // ✅ reset
+            _setNextAlarmCountdown();
+          }
+        }
+      });
+    });
+  }
+
+  void _setNextAlarmCountdown() {
+    final futureAlarms = alarms
+        .where((a) => a.dateTime != null && a.dateTime!.isAfter(DateTime.now()))
+        .toList();
+    futureAlarms.sort((a, b) => a.dateTime!.compareTo(b.dateTime!));
+
+    if (futureAlarms.isNotEmpty) {
+      currentIndex = alarms.indexOf(futureAlarms.first);
+      _startCountdown();
+    }
+  }
+
+  String _formatDuration(Duration d) {
+    final hours = d.inHours.toString().padLeft(2, '0');
+    final minutes = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final seconds = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return "$hours:$minutes:$seconds";
   }
 
   void _snoozeAlarm() {
@@ -181,97 +343,30 @@ class _AlarmScreenState extends State<AlarmScreen> {
       Duration(minutes: currentAlarm.snoozeMinutes),
     );
     currentAlarm.player?.stop();
-    currentAlarm.isPlaying = false;
-    setState(() {});
-  }
-
-  void _alarmOff() {
-    currentAlarm.snoozedUntil = null;
-    currentAlarm.isOn = false;
-    currentAlarm.player?.stop();
-    currentAlarm.isPlaying = false;
-    setState(() {});
-  }
-
-  void _resetAlarm() {
-    currentAlarm.snoozedUntil = null;
-    currentAlarm.time = null;
-    currentAlarm.isOn = false;
-    currentAlarm.isRecording = false;
-    currentAlarm.player?.stop();
+    currentAlarm.onCompleteSub?.cancel();
     currentAlarm.isPlaying = false;
 
-    // ✅ Reset title back to default and update controller
-    String defaultTitle = "Alarm ${currentIndex + 1}";
-    currentAlarm.title = defaultTitle;
-    currentController.text = defaultTitle;
+    _countdown = currentAlarm.snoozedUntil!.difference(DateTime.now());
 
-    final file = File(currentAlarm.filePath);
-    if (file.existsSync()) file.deleteSync();
     setState(() {});
-  }
-
-  Future<void> _pickAlarmTime() async {
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.now(),
-    );
-    if (picked != null) {
-      setState(() {
-        currentAlarm.time = picked;
-        currentAlarm.isOn = true;
-      });
-    }
+    _startCountdown();
   }
 
   @override
   Widget build(BuildContext context) {
-    // Password lock screen
-    if (!isUnlocked) {
-      return Scaffold(
-        appBar: AppBar(title: Text("Enter Password")),
-        body: Padding(
-          padding: EdgeInsets.all(20),
-          child: Column(
-            children: [
-              TextField(
-                controller: _pwController,
-                obscureText: true,
-                decoration: InputDecoration(labelText: "Password"),
-              ),
-              SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: () {
-                  if (_pwController.text == _password) {
-                    setState(() => isUnlocked = true);
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text("Incorrect password")),
-                    );
-                  }
-                },
-                child: Text("Unlock"),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    // Alarm UI once unlocked
     return Scaffold(
-      appBar: AppBar(title: Text('Multi Voice Alarm')),
+      appBar: AppBar(title: const Text('Multi Voice Alarm')),
       body: Padding(
-        padding: EdgeInsets.all(20),
+        padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Navigation arrows with fixed labels
+            // Navigation
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 IconButton(
-                  icon: Icon(Icons.arrow_left),
+                  icon: const Icon(Icons.arrow_left),
                   onPressed: () {
                     setState(() {
                       currentIndex =
@@ -280,11 +375,14 @@ class _AlarmScreenState extends State<AlarmScreen> {
                   },
                 ),
                 Text(
-                  "Alarm ${currentIndex + 1}", // ✅ fixed label
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  "Alarm ${currentIndex + 1}",
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 IconButton(
-                  icon: Icon(Icons.arrow_right),
+                  icon: const Icon(Icons.arrow_right),
                   onPressed: () {
                     setState(() {
                       currentIndex = (currentIndex + 1) % alarms.length;
@@ -293,76 +391,141 @@ class _AlarmScreenState extends State<AlarmScreen> {
                 ),
               ],
             ),
-            SizedBox(height: 10),
+            const SizedBox(height: 10),
 
-            // Editable title field in bold
+            // Title field
             TextField(
               controller: currentController,
               maxLength: 20,
-              style: TextStyle(fontWeight: FontWeight.bold), // ✅ bold
-              decoration: InputDecoration(labelText: "Alarm Title"),
+              style: const TextStyle(fontWeight: FontWeight.bold),
+              decoration: const InputDecoration(labelText: "Alarm Title"),
               onChanged: (val) {
                 setState(() {
                   currentAlarm.title = val;
                 });
               },
             ),
-            SizedBox(height: 20),
+            const SizedBox(height: 10),
 
-            // Buttons row: Record / Play
+            // Repeat toggle
+            Row(
+              children: [
+                const Text('Repeat:'),
+                Switch(
+                  value: currentAlarm.isRecurring,
+                  onChanged: (val) {
+                    setState(() => currentAlarm.isRecurring = val);
+                  },
+                ),
+              ],
+            ),
+
+            // Weekday selector
+            Wrap(
+              spacing: 6,
+              children: List.generate(7, (i) {
+                const labels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+                final bool selected = currentAlarm.repeatDays.contains(i);
+
+                return ChoiceChip(
+                  label: Text(
+                    labels[i],
+                    style: TextStyle(
+                      color: selected ? Colors.white : Colors.black,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  selected: selected,
+                  selectedColor: Colors.blue,
+                  backgroundColor: Colors.grey.shade300,
+                  onSelected: (isSelected) {
+                    setState(() {
+                      if (isSelected) {
+                        currentAlarm.repeatDays.add(i);
+                        currentAlarm.isRecurring = true;
+                      } else {
+                        currentAlarm.repeatDays.remove(i);
+                        if (currentAlarm.repeatDays.isEmpty) {
+                          currentAlarm.isRecurring = false;
+                        }
+                      }
+                    });
+                  },
+                );
+              }),
+            ),
+            const SizedBox(height: 20),
+
+            // Record / Play buttons
             Row(
               children: [
                 Expanded(
-                  child: ElevatedButton(
-                    onPressed: currentAlarm.isRecording
-                        ? _stopRecording
-                        : _startRecording,
-                    child: Text(currentAlarm.isRecording ? 'Stop' : 'Record'),
+                  child: AnimatedBuilder(
+                    animation: _colorAnimation,
+                    builder: (context, child) {
+                      return ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: currentAlarm.isRecording
+                              ? _colorAnimation.value
+                              : Colors.blue,
+                        ),
+                        onPressed: currentAlarm.isPlaying
+                            ? null
+                            : (currentAlarm.isRecording
+                                  ? _stopRecording
+                                  : _startRecording),
+                        child: Text(
+                          currentAlarm.isRecording ? 'Stop' : 'Record',
+                        ),
+                      );
+                    },
                   ),
                 ),
-                SizedBox(width: 10),
+                const SizedBox(width: 10),
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: _playRecordingOnce,
-                    child: Text('Play'),
+                    onPressed: currentAlarm.isRecording
+                        ? null
+                        : _playRecordingOnce,
+                    child: const Text('Play'),
                   ),
                 ),
               ],
             ),
-            SizedBox(height: 10),
+            const SizedBox(height: 10),
 
-            // Second row: Snooze, Alarm Off, Reset
+            // Snooze / Off / Reset buttons
             Row(
               children: [
                 Expanded(
                   child: ElevatedButton(
                     onPressed: _snoozeAlarm,
-                    child: Text('Snooze'),
+                    child: const Text('Snooze'),
                   ),
                 ),
-                SizedBox(width: 10),
+                const SizedBox(width: 10),
                 Expanded(
                   child: ElevatedButton(
                     onPressed: _alarmOff,
-                    child: Text('Alarm Off'),
+                    child: const Text('Alarm Off'),
                   ),
                 ),
-                SizedBox(width: 10),
+                const SizedBox(width: 10),
                 Expanded(
                   child: ElevatedButton(
                     onPressed: _resetAlarm,
-                    child: Text('Reset'),
+                    child: const Text('Reset'),
                   ),
                 ),
               ],
             ),
-            SizedBox(height: 20),
+            const SizedBox(height: 20),
 
-            // Snooze dropdown + Set Alarm Time
+            // Snooze dropdown + Set Alarm DateTime
             Row(
               children: [
-                Text('Snooze:'),
-                SizedBox(width: 10),
+                const Text('Snooze:'),
+                const SizedBox(width: 10),
                 DropdownButton<int>(
                   value: currentAlarm.snoozeMinutes,
                   items: List.generate(30, (i) => i + 1).map((min) {
@@ -375,32 +538,75 @@ class _AlarmScreenState extends State<AlarmScreen> {
                     setState(() => currentAlarm.snoozeMinutes = value!);
                   },
                 ),
-                Spacer(),
+                const Spacer(),
                 ElevatedButton(
-                  onPressed: _pickAlarmTime,
-                  child: Text('Set Alarm Time'),
+                  onPressed: _pickAlarmDateTime,
+                  child: const Text('Set Alarm Time & Date'),
                 ),
               ],
             ),
-            SizedBox(height: 20),
+            const SizedBox(height: 10),
 
-            // Info display
+            // Alarm set info
+            if (currentAlarm.dateTime != null)
+              Text(
+                'Alarm set to: ${currentAlarm.dateTime!.toLocal().toString().split('.').first}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            // Countdown button + display
+            Row(
+              children: [
+                ElevatedButton(
+                  onPressed: _startCountdown,
+                  child: const Text('Countdown'),
+                ),
+                const SizedBox(width: 20),
+                if (_countdown != null)
+                  SizedBox(
+                    height: 60,
+                    width: 60,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        CircularProgressIndicator(
+                          value: _totalCountdown != null && _countdown != null
+                              ? _countdown!.inSeconds /
+                                    _totalCountdown!.inSeconds
+                              : 0,
+                          strokeWidth: 6,
+                          backgroundColor: Colors.grey.shade300,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            currentAlarm.snoozedUntil != null
+                                ? Colors.orange
+                                : Colors.green,
+                          ),
+                        ),
+                        Text(
+                          _formatDuration(_countdown!),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            // Snoozed info
             if (currentAlarm.snoozedUntil != null)
               Text(
                 'Snoozed until: ${currentAlarm.snoozedUntil!.toLocal().toString().split('.').first}',
-                style: TextStyle(fontWeight: FontWeight.bold),
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
-            if (currentAlarm.time != null)
-              Text(
-                'Alarm time set to: ${currentAlarm.time!.format(context)}',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            SizedBox(height: 20),
+            const SizedBox(height: 20),
 
             // Status row
             Row(
               children: [
-                Text('Alarm Status: ', style: TextStyle(fontSize: 16)),
+                const Text('Alarm Status: ', style: TextStyle(fontSize: 16)),
                 Icon(
                   currentAlarm.isOn ? Icons.alarm_on : Icons.alarm_off,
                   color: currentAlarm.isOn ? Colors.green : Colors.red,
