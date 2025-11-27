@@ -5,26 +5,17 @@ import 'package:flutter_sound/flutter_sound.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 
-const lightTeal = Color(0xFFD0F0F0); // Play
-const lightGreen = Color(0xFFD4EDDA); // Set Alarm Time & Date
-const lightYellow = Color(0xFFFFF3CD); // Snooze
-const lightPurple = Color(0xFFE2D6F9); // Alarm Off
-const lightGrey = Color(0xFFF0F0F0); // Reset
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await AndroidAlarmManager.initialize();
-  runApp(const VoiceAlarmApp());
-}flu
+void main() {
+  runApp(VoiceAlarmApp());
+}
 
 class VoiceAlarmApp extends StatelessWidget {
   const VoiceAlarmApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(title: 'Multi Voice Alarm', home: AlarmScreen());
+    return MaterialApp(title: 'Multi Voice Alarm', home: AlarmScreen());
   }
 }
 
@@ -67,27 +58,18 @@ class AlarmScreen extends StatefulWidget {
 
 class _AlarmScreenState extends State<AlarmScreen>
     with SingleTickerProviderStateMixin {
-  bool micAllowed = false;
-
   late AnimationController _blinkController;
   late Animation<Color?> _colorAnimation;
   late FlutterSoundRecorder _recorder;
-
   List<AlarmData> alarms = [];
   late List<TextEditingController> _titleControllers;
   int currentIndex = 0;
-
   Timer? _alarmChecker;
   Timer? _snoozeChecker;
 
   Duration? _countdown;
-  Duration? _totalCountdown;
+  Duration? _totalCountdown; // ✅ new field
   Timer? _countdownTimer;
-
-  Future<void> checkMicPermission() async {
-    micAllowed = await Permission.microphone.isGranted;
-    setState(() {}); // refresh UI
-  }
 
   @override
   void initState() {
@@ -96,7 +78,6 @@ class _AlarmScreenState extends State<AlarmScreen>
     _initAlarms();
     _startAlarmMonitor();
     _startSnoozeMonitor();
-    checkMicPermission();
 
     _blinkController = AnimationController(
       vsync: this,
@@ -107,66 +88,6 @@ class _AlarmScreenState extends State<AlarmScreen>
       begin: Colors.red.shade200,
       end: Colors.red.shade600,
     ).animate(_blinkController);
-  }
-
-  @override
-  void dispose() {
-    _alarmChecker?.cancel();
-    _snoozeChecker?.cancel();
-    _countdownTimer?.cancel();
-    _recorder.closeRecorder();
-
-    for (var alarm in alarms) {
-      alarm.player?.stop();
-      alarm.onCompleteSub?.cancel();
-      alarm.player?.dispose();
-    }
-
-    _blinkController.dispose();
-    super.dispose();
-  }
-
-  Future<void> handleRecordTap(BuildContext context) async {
-    var status = await Permission.microphone.status;
-
-    if (status.isDenied || status.isPermanentlyDenied) {
-      showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text("Microphone Access Needed"),
-          content: const Text(
-            "To record your wake-up message, please allow microphone access in Settings.",
-          ),
-          actions: [
-            TextButton(
-              child: const Text("Open Settings"),
-              onPressed: () {
-                openAppSettings();
-                Future.delayed(
-                  Duration(seconds: 2),
-                  () => checkMicPermission(),
-                );
-                Navigator.pop(context);
-              },
-            ),
-            TextButton(
-              child: const Text("Cancel"),
-              onPressed: () => Navigator.pop(context),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-
-    if (status.isGranted) {
-      _startRecording();
-    } else {
-      var result = await Permission.microphone.request();
-      if (result.isGranted) {
-        _startRecording();
-      }
-    }
   }
 
   Future<void> _initRecorder() async {
@@ -244,6 +165,21 @@ class _AlarmScreenState extends State<AlarmScreen>
         }
       }
     });
+  }
+
+  @override
+  void dispose() {
+    _alarmChecker?.cancel();
+    _snoozeChecker?.cancel();
+    _countdownTimer?.cancel();
+    _recorder.closeRecorder();
+    for (var alarm in alarms) {
+      alarm.player?.stop();
+      alarm.onCompleteSub?.cancel();
+      alarm.player?.dispose();
+    }
+    _blinkController.dispose();
+    super.dispose();
   }
 
   Future<void> _startRecording() async {
@@ -369,7 +305,7 @@ class _AlarmScreenState extends State<AlarmScreen>
     if (target == null) return;
 
     _countdown = target.difference(DateTime.now());
-    _totalCountdown = _countdown;
+    _totalCountdown = _countdown; // ✅ store full duration once
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       setState(() {
         DateTime? activeTarget =
@@ -379,7 +315,7 @@ class _AlarmScreenState extends State<AlarmScreen>
           if (_countdown!.isNegative) {
             _countdownTimer?.cancel();
             _countdown = null;
-            _totalCountdown = null;
+            _totalCountdown = null; // ✅ reset
             _setNextAlarmCountdown();
           }
         }
@@ -430,6 +366,7 @@ class _AlarmScreenState extends State<AlarmScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Navigation
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -460,6 +397,8 @@ class _AlarmScreenState extends State<AlarmScreen>
               ],
             ),
             const SizedBox(height: 10),
+
+            // Title field
             TextField(
               controller: currentController,
               maxLength: 20,
@@ -472,6 +411,8 @@ class _AlarmScreenState extends State<AlarmScreen>
               },
             ),
             const SizedBox(height: 10),
+
+            // Repeat toggle
             Row(
               children: [
                 const Text('Repeat:'),
@@ -483,11 +424,14 @@ class _AlarmScreenState extends State<AlarmScreen>
                 ),
               ],
             ),
+
+            // Weekday selector
             Wrap(
               spacing: 6,
               children: List.generate(7, (i) {
                 const labels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
                 final bool selected = currentAlarm.repeatDays.contains(i);
+
                 return ChoiceChip(
                   label: Text(
                     labels[i],
@@ -516,17 +460,8 @@ class _AlarmScreenState extends State<AlarmScreen>
               }),
             ),
             const SizedBox(height: 20),
-            if (!micAllowed)
-              const Padding(
-                padding: EdgeInsets.only(top: 8.0),
-                child: Text(
-                  "Microphone access is needed to record your voice.",
-                  style: TextStyle(
-                    color: Colors.red,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
+
+            // Record / Play buttons
             Row(
               children: [
                 Expanded(
@@ -542,8 +477,8 @@ class _AlarmScreenState extends State<AlarmScreen>
                         onPressed: currentAlarm.isPlaying
                             ? null
                             : (currentAlarm.isRecording
-                                ? _stopRecording
-                                : _startRecording),
+                                  ? _stopRecording
+                                  : _startRecording),
                         child: Text(
                           currentAlarm.isRecording ? 'Stop' : 'Record',
                         ),
@@ -554,59 +489,44 @@ class _AlarmScreenState extends State<AlarmScreen>
                 const SizedBox(width: 10),
                 Expanded(
                   child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: lightTeal),
-                    onPressed:
-                        currentAlarm.isRecording ? null : _playRecordingOnce,
-                    child: const Text(
-                      'Play',
-                      style: TextStyle(color: Colors.black),
-                    ),
+                    onPressed: currentAlarm.isRecording
+                        ? null
+                        : _playRecordingOnce,
+                    child: const Text('Play'),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 10),
+
+            // Snooze / Off / Reset buttons
             Row(
               children: [
                 Expanded(
                   child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: lightYellow,
-                    ),
                     onPressed: _snoozeAlarm,
-                    child: const Text(
-                      'Snooze',
-                      style: TextStyle(color: Colors.black),
-                    ),
+                    child: const Text('Snooze'),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: lightPurple,
-                    ),
                     onPressed: _alarmOff,
-                    child: const Text(
-                      'Alarm Off',
-                      style: TextStyle(color: Colors.black),
-                    ),
+                    child: const Text('Alarm Off'),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: lightGrey),
                     onPressed: _resetAlarm,
-                    child: const Text(
-                      'Reset',
-                      style: TextStyle(color: Colors.black),
-                    ),
+                    child: const Text('Reset'),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 20),
+
+            // Snooze dropdown + Set Alarm DateTime
             Row(
               children: [
                 const Text('Snooze:'),
@@ -625,21 +545,20 @@ class _AlarmScreenState extends State<AlarmScreen>
                 ),
                 const Spacer(),
                 ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: lightGreen),
                   onPressed: _pickAlarmDateTime,
-                  child: const Text(
-                    'Set Alarm Time & Date',
-                    style: TextStyle(color: Colors.black),
-                  ),
+                  child: const Text('Set Alarm Time & Date'),
                 ),
               ],
             ),
             const SizedBox(height: 10),
+
+            // Alarm set info
             if (currentAlarm.dateTime != null)
               Text(
                 'Alarm set to: ${currentAlarm.dateTime!.toLocal().toString().split('.').first}',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
+            // Countdown button + display
             Row(
               children: [
                 ElevatedButton(
@@ -657,7 +576,7 @@ class _AlarmScreenState extends State<AlarmScreen>
                         CircularProgressIndicator(
                           value: _totalCountdown != null && _countdown != null
                               ? _countdown!.inSeconds /
-                                  _totalCountdown!.inSeconds
+                                    _totalCountdown!.inSeconds
                               : 0,
                           strokeWidth: 6,
                           backgroundColor: Colors.grey.shade300,
@@ -680,12 +599,16 @@ class _AlarmScreenState extends State<AlarmScreen>
               ],
             ),
             const SizedBox(height: 20),
+
+            // Snoozed info
             if (currentAlarm.snoozedUntil != null)
               Text(
                 'Snoozed until: ${currentAlarm.snoozedUntil!.toLocal().toString().split('.').first}',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
             const SizedBox(height: 20),
+
+            // Status row
             Row(
               children: [
                 const Text('Alarm Status: ', style: TextStyle(fontSize: 16)),

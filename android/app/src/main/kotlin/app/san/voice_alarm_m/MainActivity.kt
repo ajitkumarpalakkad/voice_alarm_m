@@ -1,4 +1,4 @@
-package com.example.voice_alarm_clean
+package app.san.voice_alarm_m
 
 import io.flutter.embedding.android.FlutterActivity
 

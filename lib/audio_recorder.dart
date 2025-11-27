@@ -1,6 +1,5 @@
 import 'package:flutter_sound/flutter_sound.dart';
 import 'package:path_provider/path_provider.dart';
-import 'dart:io';
 
 class AudioRecorderService {
   final FlutterSoundRecorder _recorder = FlutterSoundRecorder();
